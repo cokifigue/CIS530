@@ -7,7 +7,7 @@ import numpy as np
 import sys
 from networkx.algorithms.shortest_paths.unweighted import predecessor
 sys.path.append('F:/box/Box Sync/kaggle/xgboost')
-import xgboost as xgb
+#import xgboost as xgb
 from sklearn import svm
 
 
@@ -40,11 +40,8 @@ class DocumentPrep(object):
         self.train_label=[int(raw[-1]) for raw in raw_data]
         if 1 in self.train_label:
             print 'yes'
+        #:-3 is deleting the end of the sentence which is not always a period
         self.train_X=[raw[:-3] for raw in raw_data]
-        print self.train_X[4]
-        print test_data[2]
-        print len(self.train_X)
-        print len(test_data)
 
         vectorizer=TfidfVectorizer(ngram_range=(1,3),min_df=2,sublinear_tf=False)#stop_words='english',min_df=3)
         #ct_vectorizer=CountVectorizer(ngram_range=(1,2),stop_words='english')
@@ -52,7 +49,26 @@ class DocumentPrep(object):
         #sparse_X_ct=ct_vectorizer.fit_transform(self.train_X[1])
         self.feature_dict=vectorizer.get_feature_names()
         #print len(ct_vectorizer.get_feature_names())
-        print len(self.feature_dict)
+        print 'Feature dict length: ' + str(len(self.feature_dict))
+        #print sparse_X_ct.shape
+        return (sparse_X, len(self.train_X))
+
+    def extract_input_test(self):
+        """
+        use tf-idf weighted vector representation to represent the input data
+        """
+        raw_data=self.load_file_excerpts_raw(self.indir)
+        test_data=self.load_file_excerpts_raw(self.test_dir)
+
+        self.train_label=[int(raw[-1]) for raw in raw_data]
+        self.train_X=[raw[:-2] for raw in raw_data]
+
+        vectorizer=TfidfVectorizer(ngram_range=(1,3),min_df=2,sublinear_tf=False)#stop_words='english',min_df=3)
+        #ct_vectorizer=CountVectorizer(ngram_range=(1,2),stop_words='english')
+        sparse_X=vectorizer.fit_transform(self.train_X+test_data)
+        #sparse_X_ct=ct_vectorizer.fit_transform(self.train_X[1])
+        self.feature_dict=vectorizer.get_feature_names()
+        #print len(ct_vectorizer.get_feature_names())
         #print sparse_X_ct.shape
         return (sparse_X, len(self.train_X))
     
@@ -180,17 +196,18 @@ if __name__=="__main__":
     doc_prep=DocumentPrep(indir='F:/box/Box Sync/CIS 530/final_project/train/project_articles_train',testdir='F:/box/Box Sync/CIS 530/final_project/test/project_articles_test')
     (data,train_len)=doc_prep.extract_input()
     labels=np.asarray(doc_prep.train_label)
-    print type(data)
 #     pca=RandomizedPCA(n_components=1000)
 #     pca.fit(data)
 #     transformed_data=pca.transform(data)
 #     train=transformed_data[:train_len,:]
     train=data[:train_len,:]
-    
-    print train.shape
-    print train_len
     test=data[train_len:,:]
     
+
+    (data_test,train_len_test)=doc_prep.extract_input_test()
+    train_test=data_test[:train_len_test,:]
+
+    #Cross validation
     c_val=37
     sss = StratifiedShuffleSplit(labels, 9, test_size=0.3)
     for train_index, test_index in sss:
@@ -199,7 +216,12 @@ if __name__=="__main__":
      clf=svm.LinearSVC(C=39)
      clf.fit(X_train,y_train)
      print c_val
-     print clf.score(X_test,y_test)
-     
+     print 'Baseline Score: ' + str(clf.score(X_test,y_test))
+
+     X_train_t, X_test_t = train_test[train_index], train_test[test_index]
+     clf_test=svm.LinearSVC(C=39)
+     clf_test.fit(X_train_t,y_train)
+     print 'Test Score: ' + str(clf_test.score(X_test_t,y_test))
+
      c_val=c_val+2
     
