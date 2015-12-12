@@ -1,15 +1,17 @@
 import os,glob
-from nltk import word_tokenize
+from nltk import word_tokenize, pos_tag, pos_tag_sents
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.decomposition import RandomizedPCA
 from sklearn.cross_validation import StratifiedShuffleSplit
 import numpy as np
 import sys
+from scipy.sparse import hstack
+from scipy.sparse import csr_matrix
 from networkx.algorithms.shortest_paths.unweighted import predecessor
 sys.path.append('F:/box/Box Sync/kaggle/xgboost')
 #import xgboost as xgb
 from sklearn import svm
-
+import time
 
 #[3040]    train-error:0.078547    val-error:0.127958 with trigrams
 #[2071]    train-error:0.052954    val-error:0.112273 bigrams and min df=3
@@ -28,6 +30,7 @@ class DocumentPrep(object):
         self.test_dir=testdir
         self.train_label=[]
         self.train_X=[]
+        self.test_X=[]
         self.feature_dict=[]
     
     def extract_input(self):
@@ -35,21 +38,21 @@ class DocumentPrep(object):
         use tf-idf weighted vector representation to represent the input data
         """
         raw_data=self.load_file_excerpts_raw(self.indir)
-        test_data=self.load_file_excerpts_raw(self.test_dir)
-
+        self.test_X=self.load_file_excerpts_raw(self.test_dir)
         self.train_label=[int(raw[-1]) for raw in raw_data]
         if 1 in self.train_label:
             print 'yes'
         #:-3 is deleting the end of the sentence which is not always a period
-        self.train_X=[raw[:-3] for raw in raw_data]
+        self.train_X=[raw[:-2] for raw in raw_data]
 
         vectorizer=TfidfVectorizer(ngram_range=(1,3),min_df=2,sublinear_tf=False)#stop_words='english',min_df=3)
         #ct_vectorizer=CountVectorizer(ngram_range=(1,2),stop_words='english')
-        sparse_X=vectorizer.fit_transform(self.train_X+test_data)
+        sparse_X=vectorizer.fit_transform(self.train_X+self.test_X)
         #sparse_X_ct=ct_vectorizer.fit_transform(self.train_X[1])
         self.feature_dict=vectorizer.get_feature_names()
         #print len(ct_vectorizer.get_feature_names())
         print 'Feature dict length: ' + str(len(self.feature_dict))
+        print len(vectorizer.get_feature_names())
         #print sparse_X_ct.shape
         return (sparse_X, len(self.train_X))
 
@@ -60,17 +63,37 @@ class DocumentPrep(object):
         raw_data=self.load_file_excerpts_raw(self.indir)
         test_data=self.load_file_excerpts_raw(self.test_dir)
 
-        self.train_label=[int(raw[-1]) for raw in raw_data]
-        self.train_X=[raw[:-2] for raw in raw_data]
+        vectorizer=TfidfVectorizer(ngram_range=(1,3),min_df=2,sublinear_tf=False)#,tokenizer=word_tokenize)#stop_words='english',min_df=3)
+        sparse_X=vectorizer.fit_transform(raw_data + test_data)
+        print len(vectorizer.get_feature_names())
+        return (sparse_X, len(raw_data) )
+
+    def get_pos(self, data, out_file):
+        f_out = open(out_file, 'w')
+        print len(data)
+        count = 0
+        for line in data:
+            print count
+            count += 1
+            tokens = self.standardize(line)
+            pos_sent = pos_tag(tokens)
+            pos_line = [word + "/" + pos for word, pos in pos_sent]
+            pos_line = ' '.join(pos_line)
+            f_out.write(pos_line.encode('utf8') + "\n")
+
+    def pos_tagger(self):
+        #Tags each token in the input corpus with its corresponding part of speech
+        #train_pos = self.get_pos(self.train_X, 'train_post.txt')
+        #pickle.dump( train_pos, open( "train_pos.p", "wb" ) )
+        test_data=self.load_file_excerpts_raw(self.test_dir)
+        test_pos = self.get_pos(test_data, 'test_pos.txt')
 
         vectorizer=TfidfVectorizer(ngram_range=(1,3),min_df=2,sublinear_tf=False)#stop_words='english',min_df=3)
-        #ct_vectorizer=CountVectorizer(ngram_range=(1,2),stop_words='english')
-        sparse_X=vectorizer.fit_transform(self.train_X+test_data)
-        #sparse_X_ct=ct_vectorizer.fit_transform(self.train_X[1])
-        self.feature_dict=vectorizer.get_feature_names()
-        #print len(ct_vectorizer.get_feature_names())
-        #print sparse_X_ct.shape
-        return (sparse_X, len(self.train_X))
+        sparse_X=vectorizer.fit_transform(train_pos + test_pos)
+        pos_s=vectorizer.get_feature_names()
+        print pos_s
+        
+        return
     
     def xgboost_pred(self,train,labels,test,test_labels,final_test):
         params = {}
@@ -112,12 +135,14 @@ class DocumentPrep(object):
         return model.predict(xgtest,ntree_limit=model.best_iteration)
     
     
-    def sentence_length_count(self,corpus):
+    def sentence_length_count(self):
         """
         corpus is a list of excerpts, one line each
         
         """
-        return [avg([sent for sent in exc.split('.')]) for exc in corpus ]
+        test = [np.mean(len([sent for sent in exc.split('.')])) for exc in self.train_X ]
+        test.extend([np.mean(len([sent for sent in exc.split('.')])) for exc in self.test_X ])
+        return test
         
     def train_classifer_xgb(self,X):
         """
@@ -192,36 +217,60 @@ correspond to lowercase tokens in that exerpt
                 f.write(str(out))
                 f.write('\n')
 
+def add_feature(sparse_x, new_col):
+    #Adds new feature column to current feature matrix
+    row = np.array(range(len(new_col)))
+    col = np.array([0]*len(new_col))
+    data = np.array(new_col)
+    new_f = csr_matrix((data, (row, col)), shape=( len(new_col), 1))
+    return hstack([sparse_x, new_f]).tocsr()
+
+
 if __name__=="__main__":
-    doc_prep=DocumentPrep(indir='F:/box/Box Sync/CIS 530/final_project/train/project_articles_train',testdir='F:/box/Box Sync/CIS 530/final_project/test/project_articles_test')
+
+    local_dir = "/Users/constanzafiguerola/Documents/CIS530/Project"
+
+    #Original text:
+    doc_prep=DocumentPrep(indir=local_dir + '/data/project_articles_train',testdir= local_dir + '/data/project_articles_test')
     (data,train_len)=doc_prep.extract_input()
+    print type(data)
     labels=np.asarray(doc_prep.train_label)
+
+    #Add sentence length features
 #     pca=RandomizedPCA(n_components=1000)
 #     pca.fit(data)
 #     transformed_data=pca.transform(data)
 #     train=transformed_data[:train_len,:]
     train=data[:train_len,:]
     test=data[train_len:,:]
-    
 
-    (data_test,train_len_test)=doc_prep.extract_input_test()
+    #POS Tagged text:
+    doc_prep_pos=DocumentPrep(indir=local_dir + '/CIS530/pos_tagged/train_pos',testdir= local_dir + '/CIS530/pos_tagged/test_pos')
+    (data_test,train_len_test)=doc_prep_pos.extract_input_test()
+
+    #Add sentence length feature
+    data_test = add_feature(data_test, doc_prep.sentence_length_count())
     train_test=data_test[:train_len_test,:]
 
-    #Cross validation
+
     c_val=37
     sss = StratifiedShuffleSplit(labels, 9, test_size=0.3)
+    diff = []
     for train_index, test_index in sss:
-     X_train, X_test = train[train_index], train[test_index]
-     y_train, y_test = labels[train_index], labels[test_index]
-     clf=svm.LinearSVC(C=39)
-     clf.fit(X_train,y_train)
-     print c_val
-     print 'Baseline Score: ' + str(clf.score(X_test,y_test))
+        X_train, X_test = train[train_index], train[test_index]
+        y_train, y_test = labels[train_index], labels[test_index]
+        clf=svm.LinearSVC(C=39)
+        clf.fit(X_train,y_train)
+        print c_val
+        print 'Baseline Score: ' + str(clf.score(X_test,y_test))
 
-     X_train_t, X_test_t = train_test[train_index], train_test[test_index]
-     clf_test=svm.LinearSVC(C=39)
-     clf_test.fit(X_train_t,y_train)
-     print 'Test Score: ' + str(clf_test.score(X_test_t,y_test))
+        X_train_t, X_test_t = train_test[train_index], train_test[test_index]
+        clf_test=svm.LinearSVC(C=39)
+        clf_test.fit(X_train_t,y_train)
+        print 'Test Score: ' + str(clf_test.score(X_test_t,y_test))
 
-     c_val=c_val+2
+        cur = clf_test.score(X_test_t,y_test) - clf.score(X_test,y_test)
+        diff.append(cur)
+        print 'Difference: ' + str(cur)
+        c_val=c_val+2
     
