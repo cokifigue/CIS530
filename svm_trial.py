@@ -5,12 +5,12 @@ from sklearn.decomposition import RandomizedPCA
 from sklearn.cross_validation import StratifiedShuffleSplit
 import numpy as np
 import sys
-from scipy.sparse import hstack
-from scipy.sparse import csr_matrix
+from scipy.sparse import hstack, vstack, csr_matrix
 from networkx.algorithms.shortest_paths.unweighted import predecessor
 sys.path.append('F:/box/Box Sync/kaggle/xgboost')
 #import xgboost as xgb
 from sklearn import svm
+from collections import Counter
 import time
 
 #[3040]    train-error:0.078547    val-error:0.127958 with trigrams
@@ -217,13 +217,93 @@ correspond to lowercase tokens in that exerpt
                 f.write(str(out))
                 f.write('\n')
 
+    def get_pos_count(self, pos_tags_file, pos_dict):
+        #get average count of each pos per excerpt
+        pos_excerpts = self.load_file_excerpts_raw(pos_tags_file)
+        all_pos = set([])
+        for line in pos_excerpts:
+            sents = line.split('.')
+            cur_count = Counter([])
+            for sent in sents:
+                pos_tok = sent.split()
+                all_pos.update(pos_tok)
+                cur_count += Counter(pos_tok)
+            count_dict = dict(cur_count)
+            for key in pos_dict.keys():
+                if key in count_dict.keys():
+                    pos_dict[key].append(count_dict[key]/float(len(sents)))
+                else:
+                    pos_dict[key].append(0)
+        return pos_dict
+
+    def wordcount_helper(self, data, word_list, row, col, vals):
+
+        cur_row = 0
+        if row:
+            cur_row = max(row) + 1
+
+        for line in data:
+            if cur_row % 1000 == 0:
+                print cur_row
+            words = word_tokenize(line.decode('utf-8'))
+            word_dict = dict(Counter(words))
+            for key in word_dict.keys():
+                if key not in word_list:
+                    word_list.append(key)
+                row.append(cur_row)
+                col.append(word_list.index(key))
+                vals.append(word_dict[key])
+            cur_row += 1
+        return word_list, row, col, vals
+
+    def get_wordcount(self, train_doc, test_doc):
+        train_data = self.load_file_excerpts_raw(train_doc)
+        word_list, row, col, vals = self.wordcount_helper(train_data, [], [], [], [])
+        test_data = self.load_file_excerpts_raw(test_doc)
+        word_list, row, col, vals = self.wordcount_helper(test_data, 
+            word_list, row, col, vals)
+        
+        f_vals = open('vals.txt','w')
+        np.save(f_vals, vals)
+        f_row = open('row.txt','w')
+        np.save(f_row, row)
+        f_col = open('col.txt','w')
+        np.save(f_col, col)
+        return create_csr(vals, row, col)
+
+    def get_wc_saved(self):
+        vals = np.load('vals.txt')
+        row = np.load('row.txt')
+        col = np.load('col.txt')
+        return create_csr(vals, row, col)
+
+def create_csr(new_col, row_a, col_a, ):
+    row = np.array(row_a)
+    col = np.array(col_a)
+    data = np.array(new_col)
+    new_f = csr_matrix((data, (row, col)), shape=( max(row_a) + 1, max(col_a) + 1))
+    return new_f
+
+
 def add_feature(sparse_x, new_col):
     #Adds new feature column to current feature matrix
-    row = np.array(range(len(new_col)))
-    col = np.array([0]*len(new_col))
-    data = np.array(new_col)
-    new_f = csr_matrix((data, (row, col)), shape=( len(new_col), 1))
+    new_f = create_csr(new_col, range(len(new_col)), [0]*len(new_col))
     return hstack([sparse_x, new_f]).tocsr()
+
+def add_pos_feature(doc_prep, data_test):
+    pos_dict = {'PRP$':[], 'WDT':[], 'JJ':[], 'WP':[],'RP':[],'$':[],'(':[],'FW':[],',':[],
+                'PRP':[],'RB':[],'NNS':[],'NNP':[], 'WRB':[],'RBS':[],'EX':[],'MD':[],'UH':[],
+                'VBG':[],'VBD':[],'VBN':[],'VBP':[],'VBZ':[], 'NN':[],'CC':[],'PDT':[],
+                'CD':[],'WP$':[],'JJS':[],'JJR':[],"''":[], 'DT':[],')':[],'POS':[],'TO':[],
+                'VB':[],'RBR':[],'IN':[],'NNPS':[]}
+    pos_dict = doc_prep.get_pos_count(local_dir + "/CIS530/pos_tagged/only_pos_train",pos_dict)
+    pos_dict = doc_prep.get_pos_count(local_dir + "/CIS530/pos_tagged/only_pos_test",pos_dict)
+    for key in pos_dict.keys():
+        data_test = add_feature(data_test, pos_dict[key])
+    return data_test
+
+
+
 
 
 if __name__=="__main__":
@@ -232,6 +312,10 @@ if __name__=="__main__":
 
     #Original text:
     doc_prep=DocumentPrep(indir=local_dir + '/data/project_articles_train',testdir= local_dir + '/data/project_articles_test')
+    
+
+    #doc_prep.get_wordcount(local_dir + '/CIS530/pos_tagged/train_pos')
+
     (data,train_len)=doc_prep.extract_input()
     print type(data)
     labels=np.asarray(doc_prep.train_label)
@@ -245,12 +329,25 @@ if __name__=="__main__":
     test=data[train_len:,:]
 
     #POS Tagged text:
-    doc_prep_pos=DocumentPrep(indir=local_dir + '/CIS530/pos_tagged/train_pos',testdir= local_dir + '/CIS530/pos_tagged/test_pos')
+    #doc_prep_pos=DocumentPrep(indir=local_dir + '/CIS530/pos_tagged/train_pos',testdir= local_dir + '/CIS530/pos_tagged/test_pos')
+    doc_prep_pos=DocumentPrep(indir=local_dir + '/data/project_articles_train',testdir= local_dir + '/data/project_articles_test')
+    
     (data_test,train_len_test)=doc_prep_pos.extract_input_test()
 
     #Add sentence length feature
     data_test = add_feature(data_test, doc_prep.sentence_length_count())
+    
+    #Add pos counts as feature
+    # data_test = add_pos_feature(doc_prep, data_test)
+
+    #Add word/POS counts as feature
+    #csr_train = doc_prep.get_wordcount(local_dir + '/CIS530/pos_tagged/train_pos', local_dir + '/CIS530/pos_tagged/test_pos')
+    #csr_train = doc_prep.get_wc_saved()
+    #data_test = hstack([data_test, csr_train]).tocsr()
+
+    
     train_test=data_test[:train_len_test,:]
+
 
 
     c_val=37
